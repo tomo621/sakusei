@@ -24,10 +24,11 @@ public class PlayerMovement : MonoBehaviour
     public TextMeshProUGUI statusText;
 
     [Header("エネミー出現設定")]
-    public Enemy enemyPrefab;       
-    public int enemySpawnCount = 3; 
-    public int spawnAreaX = 8;      
-    public int spawnAreaY = 4;      
+    public Enemy enemyPrefab;
+    public int enemySpawnCount = 3;
+    public Transform backgroundTransform; // ← マップの中心点を取得するために追加
+    public float spawnAreaWidth = 8f;     // ← 出現範囲の幅
+    public float spawnAreaHeight = 6f;    // ← 出現範囲の高さ
 
     // マップ上にいる全ての敵のリストに変更
     private List<Enemy> activeEnemies = new List<Enemy>();
@@ -35,7 +36,8 @@ public class PlayerMovement : MonoBehaviour
     void Start()
     {
         currentHp = maxHp;
-        transform.position = SnapToGrid(transform.position);
+        // プレイヤー自身のZ座標を確実に0に固定する
+        transform.position = new Vector3(Mathf.Round(transform.position.x), Mathf.Round(transform.position.y), 0f);
 
         // ゲーム開始時、まず敵をランダムに自動配置する
         SpawnEnemiesRandomly();
@@ -56,14 +58,24 @@ public class PlayerMovement : MonoBehaviour
             return;
         }
 
+        // Backgroundの中心位置を取得
+        Vector3 centerPos = Vector3.zero;
+        if (backgroundTransform != null)
+        {
+            centerPos = backgroundTransform.position;
+        }
+
         for (int i = 0; i < enemySpawnCount; i++)
         {
             // 重なりを防ぐため最大10回まで空きマスを探す
             for (int attempt = 0; attempt < 10; attempt++)
             {
-                int randX = Random.Range(-spawnAreaX, spawnAreaX + 1);
-                int randY = Random.Range(-spawnAreaY, spawnAreaY + 1);
-                Vector3 spawnPos = new Vector3(randX, randY, 0f);
+                // Backgroundの中心位置をベースにランダムな座標を計算
+                float randX = centerPos.x + Random.Range(-spawnAreaWidth, spawnAreaWidth);
+                float randY = centerPos.y + Random.Range(-spawnAreaHeight, spawnAreaHeight);
+
+                // Z座標を確実に 0f にする
+                Vector3 spawnPos = new Vector3(Mathf.Round(randX), Mathf.Round(randY), 0f);
 
                 // プレイヤーの真上ならやり直し
                 if (spawnPos == transform.position) continue;
@@ -88,8 +100,13 @@ public class PlayerMovement : MonoBehaviour
 
         foreach (Enemy e in allEnemies)
         {
-            e.transform.position = SnapToGrid(e.transform.position);
-            activeEnemies.Add(e);
+            // HPが0以下（倒された直後）の敵はリストに入れない
+            if (e != null && e.currentHp > 0)
+            {
+                // 敵のZ座標も確実に 0f に固定する
+                e.transform.position = new Vector3(Mathf.Round(e.transform.position.x), Mathf.Round(e.transform.position.y), 0f);
+                activeEnemies.Add(e);
+            }
         }
     }
 
@@ -119,6 +136,7 @@ public class PlayerMovement : MonoBehaviour
                     // 敵がいない場所なら移動して攻撃フェーズへ
                     if (hitCollider == null || hitCollider.gameObject == gameObject)
                     {
+                        // 移動時もZ座標は必ず 0f
                         transform.position = new Vector3(snapX, snapY, 0f);
                         currentPhase = Phase.AttackSelect;
                         UpdateTurnUI("【攻撃フェーズ】\n攻撃対象を選択\n(何もない場所で待機)");
@@ -144,8 +162,17 @@ public class PlayerMovement : MonoBehaviour
                             Destroy(targetEnemy.gameObject);
                             UpdateTurnUI("敵を撃破しました！\nSTAGE CLEAR");
                             currentPhase = Phase.Wait;
-                            Invoke("RefreshEnemyList", 0.1f);
-                            Invoke("GoToResult", 1.5f);
+
+                            // 倒した直後にリストを更新し、敵が0ならクリア
+                            RefreshEnemyList();
+                            if (activeEnemies.Count == 0)
+                            {
+                                Invoke("GoToResult", 1.5f);
+                                return;
+                            }
+
+                            // まだ敵がいる場合は敵のターンへ
+                            StartCoroutine(EnemyTurnRoutine());
                             return;
                         }
                     }
@@ -194,7 +221,7 @@ public class PlayerMovement : MonoBehaviour
 
         foreach (Enemy enemy in activeEnemies)
         {
-            if (enemy == null) continue;
+            if (enemy == null || enemy.currentHp <= 0) continue;
 
             int distToPlayer = GetDistance(enemy.transform.position, transform.position);
 
@@ -214,6 +241,9 @@ public class PlayerMovement : MonoBehaviour
                     newEnemyPos.y += Mathf.Sign(diffY);
                 }
 
+                // 敵の移動先もZ座標を0fに固定
+                newEnemyPos.z = 0f;
+
                 Collider2D hit = Physics2D.OverlapPoint(newEnemyPos);
                 if (hit == null || hit.gameObject == gameObject)
                 {
@@ -225,7 +255,7 @@ public class PlayerMovement : MonoBehaviour
                 yield return new WaitForSeconds(0.5f);
             }
 
-            // 距離がならプレイヤーを攻撃する
+            // 距離が1ならプレイヤーを攻撃する
             if (distToPlayer <= 1)
             {
                 int damage = Mathf.Max(1, enemy.atk - def);
